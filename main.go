@@ -1,52 +1,43 @@
 package main
 
 import (
-	"fmt"
+	"database/sql"
 	"log"
 	"net/http"
+	"os"
 	"sync/atomic"
+
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
+	"github.com/luism2302/Chirpy/internal/database"
 )
-
-func healthzHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(http.StatusText(http.StatusOK)))
-}
-
-func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	output_text := fmt.Sprintf("Hits: %d", cfg.fileServerHits.Load())
-	w.Write([]byte(output_text))
-}
-
-func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	cfg.fileServerHits.Store(0)
-	w.Write([]byte("Reseting hits..."))
-}
-
-func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cfg.fileServerHits.Add(1)
-		next.ServeHTTP(w, r)
-	})
-}
 
 type apiConfig struct {
 	fileServerHits atomic.Int32
+	db             database.Queries
+	platform       string
 }
 
 func main() {
+	godotenv.Load()
+	dbUrl := os.Getenv("DB_URL")
+	platform := os.Getenv("PLATFORM")
+	db, err := sql.Open("postgres", dbUrl)
+	if err != nil {
+		log.Printf("error connecting to db: %s", err)
+	}
+	defer db.Close()
+	dbQueries := database.New(db)
 	const port = "8080"
 	const filePathRoot = "."
-	cfg := apiConfig{}
+	cfg := apiConfig{db: *dbQueries, platform: platform}
 	mux := http.NewServeMux()
 	mux.Handle("/app/", http.StripPrefix("/app", cfg.middlewareMetricsInc(http.FileServer(http.Dir(filePathRoot)))))
-	mux.HandleFunc("GET /healthz", healthzHandler)
-	mux.HandleFunc("GET /metrics", cfg.metricsHandler)
-	mux.HandleFunc("POST /reset", cfg.resetHandler)
+	mux.HandleFunc("GET /api/healthz", healthzHandler)
+	mux.HandleFunc("GET /admin/metrics", cfg.metricsHandler)
+	mux.HandleFunc("POST /admin/reset", cfg.resetHandler)
+	mux.HandleFunc("POST /api/chirps", cfg.chirpsHandler)
+	mux.HandleFunc("POST /api/users", cfg.usersHandler)
 	server := http.Server{
 		Handler: mux,
 		Addr:    ":" + port,
